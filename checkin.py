@@ -13,12 +13,15 @@
 """
 
 import html
+import hashlib
 import json
+import math
 import os
 import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 import requests
 
@@ -55,6 +58,10 @@ NORMAL_CHECKIN_MESSAGES = (
     "checkin repeats! please try tomorrow",
     "today's observation logged",
 )
+
+# The current official console obtains a fresh challenge, waits at least 2.5 s,
+# and sends SHA-256(nonce + ".glados-observe-v1") with the check-in request.
+CHECKIN_CHALLENGE_DELAY = 2.5
 
 # 积分兑换计划 (#11)：消耗 points 积分兑换 days 天会员。
 # 通过环境变量 EXCHANGE_PLAN 选择，默认 plan500（500 分兑换 100 天），
@@ -155,9 +162,59 @@ def get_cookies():
     return [cookie for item in raw.split(sep) if (cookie := extract_cookie(item))]
 
 
+class UserAgentConfigurationError(ValueError):
+    """Invalid local User-Agent input; messages never contain the supplied value."""
+
+
+def normalize_user_agent(raw):
+    """Remove common copy/paste wrappers without altering the browser value."""
+    if any((ord(char) < 32 and char not in '\t\r\n') or ord(char) == 127 for char in raw):
+        raise UserAgentConfigurationError('含有无效控制字符，请重新复制浏览器的 User-Agent')
+    value = raw.strip()
+    if not value:
+        return '', False
+    if '\r' in value or '\n' in value:
+        raise UserAgentConfigurationError('含有换行，请粘贴完整单行 User-Agent')
+    try:
+        value.encode('latin-1')
+    except UnicodeEncodeError:
+        raise UserAgentConfigurationError(
+            '含有不支持的字符，请重新复制浏览器的 User-Agent，不要加入说明文字或中文引号'
+        ) from None
+
+    original = value
+    prefix_removed = False
+    if value.lower().startswith('user-agent:'):
+        value = value[len('user-agent:'):].strip()
+        prefix_removed = True
+    if len(value) >= 2 and value[0] == value[-1]:
+        inner = value[1:-1]
+        # Apostrophes can be legal product-token characters. Preserve a quoted
+        # single token; only unwrap full, space-containing browser strings or
+        # an explicitly copied header name. Double quotes are not token chars.
+        single_quote_wrapper = value[0] == "'" and (
+            not inner or any(char in ' \t' for char in inner)
+            or inner.lower().startswith('user-agent:')
+        )
+        if value[0] == '"' or single_quote_wrapper:
+            value = inner.strip()
+    if not prefix_removed and value.lower().startswith('user-agent:'):
+        value = value[len('user-agent:'):].strip()
+    if not value:
+        raise UserAgentConfigurationError('只有请求头名称或引号，没有 User-Agent 值')
+    if value[0] == '"' or value[-1] == '"':
+        raise UserAgentConfigurationError('外层双引号不成对或重复，请只保留 User-Agent 值')
+    if len(value) >= 2 and value[0] == value[-1] == "'" and any(char in ' \t' for char in value):
+        raise UserAgentConfigurationError('包裹 User-Agent 的单引号重复，请只保留 User-Agent 值')
+    if value.lower().startswith('user-agent:'):
+        raise UserAgentConfigurationError('请求头名称重复，请只保留 User-Agent 值')
+    return value, value != original
+
+
 def get_browser_headers():
     """Build headers matching the browser that created the login session."""
-    user_agent = os.environ.get("GLADOS_USER_AGENT", "").strip() or DEFAULT_USER_AGENT
+    user_agent, _ = normalize_user_agent(os.environ.get("GLADOS_USER_AGENT", ""))
+    user_agent = user_agent or DEFAULT_USER_AGENT
     headers = {'User-Agent': user_agent}
 
     chrome = re.search(r'(?:Chrome|Chromium)/(\d+)', user_agent)
@@ -216,7 +273,11 @@ def summarize_checkin_failure(result):
 
     reason = str(result.get('reason', '')).strip().lower()
     message = str(result.get('message', '')).strip().lower()
-    if result.get('request_failed') is True:
+    if reason == 'checkin-challenge-unavailable':
+        label = '未获取有效签到验证，本次未提交签到，请稍后重试'
+    elif reason == 'checkin-challenge-expired':
+        label = '签到验证已过期，本次未提交签到，请稍后重试'
+    elif result.get('request_failed') is True:
         if result.get('invalid_headers') is True:
             label = '请求头格式无效，请检查 Cookie 和 User-Agent 格式'
         elif result.get('invalid_response') is True:
@@ -248,8 +309,16 @@ def summarize_checkin_failure(result):
 
 
 def log_user_agent_configuration():
-    configured = bool(os.environ.get('GLADOS_USER_AGENT', '').strip())
-    log('浏览器 User-Agent: ' + ('已配置' if configured else '未配置，使用默认值'))
+    try:
+        user_agent, normalized = normalize_user_agent(os.environ.get('GLADOS_USER_AGENT', ''))
+    except UserAgentConfigurationError as error:
+        log(f'❌ User-Agent 配置错误: {error}')
+        return False
+    status = '已配置' if user_agent else '未配置，使用默认值'
+    if normalized:
+        status += '（已自动去除外层引号或请求头名称）'
+    log('浏览器 User-Agent: ' + status)
+    return True
 
 
 def is_normal_checkin_result(result):
@@ -308,15 +377,17 @@ class GLaDOS:
                 "2026-09 新版接口可能返回“没有权限”"
             )
 
-    def req(self, method, path, data=None, form=False):
+    def req(self, method, path, data=None, form=False, domains=None):
         """带自动域名切换的请求；form=True 时以表单提交（兑换接口要求）"""
+        # Validate local configuration before the retry loop or any network request.
+        browser_headers = get_browser_headers()
         # Keep only fixed, non-secret failure metadata after all domains fail.
         failure = {'request_failed': True, 'reason': 'request-failed'}
-        for d in DOMAINS:
+        for d in DOMAINS if domains is None else domains:
             try:
                 url = f"{d}{path}"
                 h = HEADERS.copy()
-                h.update(get_browser_headers())
+                h.update(browser_headers)
                 h['Cookie'] = self.cookie
                 h['Origin'] = d
                 h['Referer'] = f"{d}/console/checkin"
@@ -403,7 +474,33 @@ class GLaDOS:
 
     def checkin(self):
         """执行签到"""
-        return self.req('POST', '/api/user/checkin', {'token': 'glados.cloud'})
+        challenge = self.req('GET', '/api/user/checkin/challenge')
+        if is_non_retryable_checkin_result(challenge) or is_missing_api_response(challenge):
+            return challenge
+        nonce = challenge.get('nonce')
+        ttl = challenge.get('ttl', 300000)
+        if (
+            challenge.get('code') != 0
+            or not isinstance(nonce, str) or not 0 < len(nonce) <= 4096
+            or type(ttl) not in (int, float)
+            or (type(ttl) is float and not math.isfinite(ttl))
+            or ttl <= CHECKIN_CHALLENGE_DELAY * 1000
+        ):
+            return {'request_failed': True, 'reason': 'checkin-challenge-unavailable'}
+
+        # A nonce belongs to the origin which issued it. Do not replay the POST
+        # on another domain; the outer retry obtains a fresh challenge instead.
+        domain = self.domain
+        received_at = time.monotonic()
+        proof = hashlib.sha256((nonce + '.glados-observe-v1').encode('utf-8')).hexdigest()
+        time.sleep(CHECKIN_CHALLENGE_DELAY)
+        if (time.monotonic() - received_at) * 1000 >= ttl:
+            return {'request_failed': True, 'reason': 'checkin-challenge-expired'}
+        return self.req('POST', '/api/user/checkin', {
+            'token': urlsplit(domain).hostname,
+            'nonce': nonce,
+            'proof': proof,
+        }, domains=(domain,))
 
     def exchange(self, plan):
         """兑换会员天数：表单提交 planType (plan100/plan200/plan500)"""
@@ -562,7 +659,8 @@ def diagnose_accounts(cookies):
     """Read authentication status without check-in, redemption or notifications."""
     success_cnt = 0
     log('🔎 只读诊断：仅查询登录状态，不签到、不兑换、不推送')
-    log_user_agent_configuration()
+    if not log_user_agent_configuration():
+        return 1
     for i, cookie in enumerate(cookies, 1):
         client = GLaDOS(cookie)
         result = client.req('GET', '/api/user/status')
@@ -595,7 +693,8 @@ def main():
     if os.environ.get('CHECKIN_DIAGNOSTIC_ONLY', '').strip().lower() in ('1', 'true', 'yes'):
         return diagnose_accounts(cookies)
 
-    log_user_agent_configuration()
+    if not log_user_agent_configuration():
+        return 1
     exchange_plan = get_exchange_plan()
     if exchange_plan:
         plan = EXCHANGE_PLANS[exchange_plan]
