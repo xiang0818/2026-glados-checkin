@@ -67,6 +67,15 @@
 
 ---
 
+## 使用说明与免责声明
+
+本项目为非官方社区辅助工具。使用前请阅读以下说明，并确认自己的部署方式符合所用平台的要求。
+
+- **账号与平台规则**：仅用于本人或已获明确授权的账号，遵守适用法律法规以及 GLaDOS、GitHub 和所选推送服务的服务条款。请自行确认平台是否允许相应的自动化使用方式。
+- **运行与奖励限制**：接口、验证流程、积分规则、服务额度和访问策略可能发生变化。测试通过或维护者账号运行成功，不构成持续可用、固定积分、补发差额、兑换成功或账号权益不受影响的保证；签到和奖励以平台实际记录为准。
+- **凭据与通知隐私**：请妥善保管 Cookie、Token、SendKey 等凭据，GitHub 部署时使用 Secrets，不要提交到代码、公开日志或 Issue。通知触发时，签到摘要可能包含邮箱、积分和剩余天数，并会发送给你配置的推送服务；配置前请了解该服务的数据处理规则。
+- **风险与责任范围**：本项目按“现状”提供。在适用法律允许的范围内，维护者和贡献者不对使用本项目产生的服务中断、数据或凭据泄露、积分及账号权益损失等承担赔偿责任。本说明不排除依法不得免除的责任。
+
 ## 💡 重要说明
 
 > 默认只使用仓库内置的 **GitHub Actions** 定时任务，无需创建外部 cron。
@@ -819,11 +828,14 @@ GitHub 的 schedule 不是实时调度器：高负载时可能延迟，极端情
 
 | 贡献者 | 贡献 | Pull Request |
 | --- | --- | --- |
+| [@Ch3nSir](https://github.com/Ch3nSir) | 添加 Server酱 Turbo / Server酱³ 推送支持，补充部署说明、NixOS 配置和通知回归测试。 | [#27](https://github.com/lankerr/2026-glados-checkin/pull/27) |
 | [@badpinkman](https://github.com/badpinkman) | 适配新版 `gld:sess` 会话与浏览器设备校验，完善 Cookie 获取、User-Agent 配置和认证失败提示，并提供真实运行验证。 | [#18](https://github.com/lankerr/2026-glados-checkin/pull/18) |
 | [@Unexpectedlyc](https://github.com/Unexpectedlyc) | 调整 README 的部署顺序与说明，减少 GitHub Actions 和外部定时器配置带来的误解。 | [#5](https://github.com/lankerr/2026-glados-checkin/pull/5) |
 | [@Initsnow](https://github.com/Initsnow) | 添加 Telegram 推送、通知级别与 NixOS Flake 支持，并修复 Telegram 消息格式问题。 | [#3](https://github.com/lankerr/2026-glados-checkin/pull/3) |
 
 同时感谢 [@LxFairy](https://github.com/LxFairy) 提交上游同步与冲突处理 PR（[#8](https://github.com/lankerr/2026-glados-checkin/pull/8)、[#9](https://github.com/lankerr/2026-glados-checkin/pull/9)，未合并），以及在 Issues 中提供报错日志、排查线索和复测反馈的用户。
+
+感谢 [@chengchang1987-cloud](https://github.com/chengchang1987-cloud) 在 [Issue #28](https://github.com/lankerr/2026-glados-checkin/issues/28) 提供积分流水、challenge 排查证据和[参考脚本](https://github.com/lankerr/2026-glados-checkin/issues/28#issuecomment-6676702004)。参考脚本的核心 proof 算法与已合并的 #31 一致；本次进一步采纳日志即时刷新（`flush=True`）及 2.7 秒等待时间（在 2.5 秒基础上增加 0.2 秒余量）。原有的 nonce/TTL 校验、同域提交、失败时不回退旧签到流程、User-Agent 兼容和推送行为均保留。这两项改进不代表首次签到奖励已恢复，仍需以下一次首次签到返回及实际积分入账核验。
 
 特别感谢 @badpinkman 对 2026 年 9 月认证故障的排查与修复，帮助本项目恢复正常签到。
 
@@ -881,7 +893,7 @@ MIT
 
 **Made with ❤️ for GLaDOS users in 2026**
 
-**🔧 本项目最近一次维护验证：2026-10-25**
+**🔧 本项目最近一次维护验证：2026-11-06**
 
 **⭐ Star 一下，支持作者持续更新！⭐**
 
